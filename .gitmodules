@@ -1,0 +1,3 @@
+[submodule "WrapLocale/MinHook"]
+	path = WrapLocale/MinHook
+	url = https://github.com/TsudaKageyu/minhook.git
