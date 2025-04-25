@@ -16,8 +16,8 @@ GLOBAL_CONFIG settings = {
     0x0411,                 // LCID
     540,                    // Bias
     true,                   // HookIME
-    true,                   // HookLCID
-    false,                  // UseFontSubstitution
+    true,                   // SingleLCID
+    false,                   // UseFontSubstitution
     false,                  // SubstituteAllFonts
     L"MS Gothic",           // SubstituteFontName
     {                       // FontsToSubstitute
@@ -34,7 +34,8 @@ GLOBAL_CONFIG settings = {
         L"SandboxieBITS.exe",
         L"Firefox.exe",
         L"Chrome.exe",
-        L"explorer.exe"
+        L"explorer.exe",
+        L"vsjitdebugger.exe"
     }
 };
 
@@ -69,10 +70,10 @@ bool ReadLRProfileConfig(const WCHAR* boxName, GLOBAL_CONFIG& profile)
     if (rc >= 0) profile.Bias = _wtol(buffer);
 
     // Read boolean values
-    profile.HookIME = pSbieApi_QueryConfBool(boxName, L"EmulatorHooksIME", TRUE);
-    profile.SingleLCID = pSbieApi_QueryConfBool(boxName, L"EmulatorUsesSingleLCID", TRUE);
-    profile.UseFontSubstitution = pSbieApi_QueryConfBool(boxName, L"EmulatorSubstitutesFonts", FALSE);
-    profile.SubstituteAllFonts = pSbieApi_QueryConfBool(boxName, L"EmulatorSubstituteAllFonts", FALSE);
+    profile.HookIME = pSbieApi_QueryConfBool(boxName, L"EmulatorHooksIME", profile.HookIME);
+    profile.SingleLCID = pSbieApi_QueryConfBool(boxName, L"EmulatorUsesSingleLCID", profile.SingleLCID);
+    profile.UseFontSubstitution = pSbieApi_QueryConfBool(boxName, L"EmulatorSubstitutesFonts", profile.UseFontSubstitution);
+    profile.SubstituteAllFonts = pSbieApi_QueryConfBool(boxName, L"EmulatorSubstituteAllFonts", profile.SubstituteAllFonts);
 
     // Read SubstituteFontName (needs memory allocation)
     rc = pSbieApi_QueryConf(boxName, L"SubstituteFontName", 0, buffer, sizeof(buffer));
@@ -219,6 +220,9 @@ BOOL WINAPI DllMain(HINSTANCE hInstance, DWORD dwReason, LPVOID lpReserved)
 
         Initial.hModule = hInstance;
         Initial.CodePage = GetACP();
+
+        MAP_CODEPAGE_TO_CHARSET(Initial.CodePage, Initial.Charset);
+
         Initial.hHeap = GetProcessHeap();
 
         DisableThreadLibraryCalls(hInstance);

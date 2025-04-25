@@ -21,6 +21,8 @@ struct INITIAL_STATE
 	HMODULE hModule = NULL;
 	HANDLE hHeap = NULL;
 	UINT CodePage = CP_ACP;
+	UINT Charset = 0;
+	UINT LCID = 0;
 	char DllPath[MAX_PATH] = { 0 };
 	const char* lpDefaultChar = " ";
 	BOOL lpUsedDefaultChar = TRUE;
@@ -57,4 +59,5 @@ inline VOID FreeStringInternal(LPVOID pBuffer);
 LPWSTR MultiByteToWideCharInternal(LPCSTR lstr, UINT CodePage);
 LPSTR WideCharToMultiByteInternal(LPCWSTR wstr, UINT CodePage);
 
-void DebugLog(const char* format, ...);
+extern inline void DebugLog(const char* format, ...);
+extern inline void DebugLog(const wchar_t* format, ...);

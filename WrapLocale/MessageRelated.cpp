@@ -94,32 +94,58 @@ NTSTATUS WINAPI HookRtlAnsiStringToUnicodeString(
     PANSI_STRING SourceString,         /* [I]   Ansi string to be converted */
     BOOLEAN AllocateDestinationString  /* [I]   TRUE=Allocate new buffer for uni, FALSE=Use existing buffer */
 ){
-	DWORD total = HookRtlAnsiStringToUnicodeSize(SourceString);
-	if (total > 0xffff)
-		return STATUS_INVALID_PARAMETER_2;
+    if (!DestinationString || !SourceString)
+        return STATUS_INVALID_PARAMETER;
 
-	DestinationString->Length = total - sizeof(WCHAR);
+    // Calculate required buffer size with the specified code page
+    int RequiredSize = MultiByteToWideChar(
+        settings.CodePage, 
+        0, 
+        SourceString->Buffer, 
+        SourceString->Length, 
+        NULL, 
+        0
+    );
 
-	if (AllocateDestinationString) {
-		DestinationString->MaximumLength = total;
-		DestinationString->Buffer = (LPWSTR)AllocateZeroedMemory(total);
-		if (!DestinationString->Buffer)
-			return STATUS_NO_MEMORY;
-	}
-	else if (total > DestinationString->MaximumLength)
-		return STATUS_BUFFER_OVERFLOW;
+    if (RequiredSize == 0)
+        return STATUS_INVALID_PARAMETER_2;
 
-	MultiByteToWideChar(
-		settings.CodePage, 
-		0, SourceString->Buffer, 
-		SourceString->Length, 
-		DestinationString->Buffer, 
-		DestinationString->Length / sizeof(WCHAR)
-	);
+    // Add space for null terminator
+    DWORD total = (RequiredSize + 1) * sizeof(WCHAR);
+    if (total > 0xffff)
+        return STATUS_INVALID_PARAMETER_2;
 
-	DestinationString->Buffer[DestinationString->Length / sizeof(WCHAR)] = 0;
+    DestinationString->Length = RequiredSize * sizeof(WCHAR);
 
-	return STATUS_SUCCESS;
+    if (AllocateDestinationString) {
+        DestinationString->MaximumLength = total;
+        DestinationString->Buffer = (LPWSTR)AllocateZeroedMemory(total);
+        if (!DestinationString->Buffer)
+            return STATUS_NO_MEMORY;
+    }
+    else if (total > DestinationString->MaximumLength)
+        return STATUS_BUFFER_OVERFLOW;
+
+    // Perform the actual conversion
+    if (!MultiByteToWideChar(
+        settings.CodePage, 
+        0, 
+        SourceString->Buffer, 
+        SourceString->Length, 
+        DestinationString->Buffer, 
+        RequiredSize
+    )) {
+        if (AllocateDestinationString) {
+            FreeStringInternal(DestinationString->Buffer);
+            DestinationString->Buffer = NULL;
+        }
+        return STATUS_INVALID_PARAMETER_2;
+    }
+
+    // Add null terminator
+    DestinationString->Buffer[RequiredSize] = 0;
+
+    return STATUS_SUCCESS;
 }
 
 PLARGE_UNICODE_STRING LargeStringAnsiToUnicode(
@@ -154,29 +180,42 @@ PLARGE_UNICODE_STRING CaptureAnsiWindowName(
     PLARGE_UNICODE_STRING WindowName, 
     PLARGE_UNICODE_STRING UnicodeWindowName
 ) {
-	InitEmptyLargeString(UnicodeWindowName);
+    InitEmptyLargeString(UnicodeWindowName);
+    
+    if (!WindowName || WindowName->Buffer == 0)
+        return UnicodeWindowName;
+    
+    // Special case: Resource ID (indicated by 0xFFFF marker)
+    if ((!WindowName->Ansi && WindowName->UnicodeBuffer[0] == 0xFFFF) ||
+        (WindowName->Ansi && ((WORD*)WindowName->AnsiBuffer)[0] == 0xFFFF)) {
+        PWCHAR Buffer = (PWCHAR)AllocateZeroedMemory(sizeof(WCHAR) * 0x10);
+        if (!Buffer)
+            return UnicodeWindowName;
+        
+        ZeroMemory(Buffer, sizeof(WCHAR) * 0x10);
+        LARGE_UNICODE_STRING TitleAsResourceId = {0};
+        ULONG_PTR Length;
+        
+        TitleAsResourceId.Ansi = FALSE;
 
-	if (!WindowName || WindowName->Buffer == 0)
-		return NULL;
+        Length = 4;
+        if (WindowName->Ansi) {
+            MultiByteToWideChar(CP_ACP, 0, WindowName->AnsiBuffer, Length/2, Buffer, 0x10);
+        } else {
+            CopyMemory(Buffer, WindowName->UnicodeBuffer, Length);
+        }
 
-	if (WindowName->UnicodeBuffer[0] == 0xFFFF) {
-		WCHAR Buffer[0x10];
-		ULONG_PTR Length;
-		LARGE_UNICODE_STRING TitleAsResourceId;
+        TitleAsResourceId.Length = Length;
+        TitleAsResourceId.MaximumLength = sizeof(WCHAR) * 0x10;
+        TitleAsResourceId.Buffer = (ULONG64)Buffer;
+        
+        PLARGE_UNICODE_STRING result = LargeStringDuplicate(&TitleAsResourceId, UnicodeWindowName);
+        FreeMemory(Buffer);
 
-		TitleAsResourceId.Ansi = FALSE;
-		Length = WindowName->Ansi ? 3 : 4;
+        return result;
+    }
 
-		CopyMemory(Buffer, WindowName->AnsiBuffer + WindowName->Ansi, Length);
-
-		TitleAsResourceId.Length = Length;
-		TitleAsResourceId.MaximumLength = Length;
-		TitleAsResourceId.Buffer = (ULONG64)Buffer;
-
-		return LargeStringDuplicate(&TitleAsResourceId, UnicodeWindowName);
-	}
-
-	return LargeStringAnsiToUnicode(WindowName, UnicodeWindowName);
+    return LargeStringAnsiToUnicode(WindowName, UnicodeWindowName);
 }
 
 /*************************************/
@@ -258,27 +297,41 @@ LRESULT NTAPI UNICODE_INSTRINGNULL(WNDPROC PrevProc, HWND Window, UINT Message, 
 
 LRESULT NTAPI UNICODE_OUTSTRING(WNDPROC PrevProc, HWND Window, UINT Message, WPARAM wParam, LPARAM lParam)
 {
-	UINT UnicodeSize = (UINT)wParam;
-	LPWSTR UnicodeBuffer = (LPWSTR)lParam;
+    UINT UnicodeSize = (UINT)wParam;
+    LPWSTR UnicodeBuffer = (LPWSTR)lParam;
 
-	DebugLog(L"UNICODE_INSTRINGNULL=%s", UnicodeBuffer);
+    if (!UnicodeBuffer || UnicodeSize == 0)
+        return 0;
 
-	UINT AnsiSize = UnicodeSize * sizeof(WCHAR);
-	LPSTR AnsiBuffer = (LPSTR)AllocateZeroedMemory(AnsiSize);
-	if (AnsiBuffer == nullptr)
-		return 0;
+    // Calculate required buffer size for ANSI conversion
+    int AnsiSize = WideCharToMultiByte(settings.CodePage, 0, UnicodeBuffer, UnicodeSize, 
+                                      NULL, 0, NULL, NULL);
+    if (AnsiSize == 0)
+        return 0;
 
-	wParam = AnsiSize;
-	lParam = (LPARAM)AnsiBuffer;
+    LPSTR AnsiBuffer = (LPSTR)AllocateZeroedMemory(AnsiSize);
+    if (AnsiBuffer == nullptr)
+        return 0;
 
-	AnsiSize = CallWindowProcA(PrevProc, Window, Message, wParam, lParam);
+    // Convert Unicode to ANSI
+    if (!WideCharToMultiByte(settings.CodePage, 0, UnicodeBuffer, UnicodeSize, 
+                            AnsiBuffer, AnsiSize, NULL, NULL)) {
+        FreeStringInternal(AnsiBuffer);
+        return 0;
+    }
 
-	if (AnsiSize != 0)
-		WideCharToMultiByte(settings.CodePage, 0, UnicodeBuffer, UnicodeSize, AnsiBuffer, AnsiSize, NULL, NULL);
+    // Call the ANSI window procedure
+    LRESULT Result = CallWindowProcA(PrevProc, Window, Message, AnsiSize, (LPARAM)AnsiBuffer);
 
-	FreeStringInternal(AnsiBuffer);
+    // If the call succeeded and we need to copy data back
+    if (Result > 0 && Result <= UnicodeSize) {
+        // Convert the result back to Unicode
+        MultiByteToWideChar(settings.CodePage, 0, AnsiBuffer, Result, 
+                           UnicodeBuffer, UnicodeSize);
+    }
 
-	return AnsiSize / sizeof(WCHAR);
+    FreeStringInternal(AnsiBuffer);
+    return Result;
 }
 
 LRESULT NTAPI UNICODE_INSTRING(WNDPROC PrevProc, HWND Window, UINT Message, WPARAM wParam, LPARAM lParam)
@@ -288,8 +341,39 @@ LRESULT NTAPI UNICODE_INSTRING(WNDPROC PrevProc, HWND Window, UINT Message, WPAR
 
 LRESULT NTAPI UNICODE_INCNTOUTSTRING(WNDPROC PrevProc, HWND Window, UINT Message, WPARAM wParam, LPARAM lParam)
 {
-	DebugLog(L"UNICODE_INCNTOUTSTRING");
-	return CallWindowProcA(PrevProc, Window, Message, wParam, lParam);
+    UINT UnicodeCount = (UINT)wParam;
+    LPWSTR UnicodeInput = (LPWSTR)lParam;
+
+    if (!UnicodeInput || UnicodeCount == 0)
+        return CallWindowProcA(PrevProc, Window, Message, wParam, lParam);
+
+    // Convert Unicode to ANSI for input
+    int AnsiSize = WideCharToMultiByte(settings.CodePage, 0, UnicodeInput, UnicodeCount, 
+                                      NULL, 0, NULL, NULL);
+    if (AnsiSize == 0)
+        return 0;
+
+LPSTR AnsiBuffer = (LPSTR)AllocateZeroedMemory(AnsiSize);
+    if (AnsiBuffer == nullptr)
+        return 0;
+
+    if (!WideCharToMultiByte(settings.CodePage, 0, UnicodeInput, UnicodeCount, 
+                            AnsiBuffer, AnsiSize, NULL, NULL)) {
+        FreeStringInternal(AnsiBuffer);
+        return 0;
+    }
+
+    // Call the ANSI procedure
+    LRESULT Result = CallWindowProcA(PrevProc, Window, Message, AnsiSize, (LPARAM)AnsiBuffer);
+
+    // If output is expected in the same buffer, convert back to Unicode
+    if (Result > 0) {
+        MultiByteToWideChar(settings.CodePage, 0, AnsiBuffer, Result, 
+                           UnicodeInput, UnicodeCount);
+    }
+
+    FreeStringInternal(AnsiBuffer);
+    return Result;
 }
 
 LRESULT NTAPI UNICODE_INCBOXSTRING(WNDPROC PrevProc, HWND Window, UINT Message, WPARAM wParam, LPARAM lParam)
@@ -299,10 +383,34 @@ LRESULT NTAPI UNICODE_INCBOXSTRING(WNDPROC PrevProc, HWND Window, UINT Message, 
 
 LRESULT NTAPI UNICODE_OUTCBOXSTRING(WNDPROC PrevProc, HWND Window, UINT Message, WPARAM wParam, LPARAM lParam)
 {
-	DebugLog(L"UNICODE_OUTCBOXSTRING");
-	return CallWindowProcA(PrevProc, Window, Message, wParam, lParam);
-}
+    UINT UnicodeSize = (UINT)wParam;
+    LPWSTR UnicodeBuffer = (LPWSTR)lParam;
 
+    if (!UnicodeBuffer || UnicodeSize == 0)
+        return CallWindowProcA(PrevProc, Window, Message, wParam, lParam);
+
+    // Calculate required buffer size for ANSI conversion
+    int AnsiSize = WideCharToMultiByte(settings.CodePage, 0, UnicodeBuffer, UnicodeSize, 
+                                      NULL, 0, NULL, NULL);
+    if (AnsiSize == 0)
+        return 0;
+
+    LPSTR AnsiBuffer = (LPSTR)AllocateZeroedMemory(AnsiSize);
+    if (AnsiBuffer == nullptr)
+        return 0;
+
+    // Call the ANSI procedure with a buffer to receive the result
+    LRESULT Result = CallWindowProcA(PrevProc, Window, Message, AnsiSize, (LPARAM)AnsiBuffer);
+
+    // If the call succeeded, convert the result back to Unicode
+    if (Result > 0) {
+        MultiByteToWideChar(settings.CodePage, 0, AnsiBuffer, Result, 
+                           UnicodeBuffer, UnicodeSize);
+    }
+
+    FreeStringInternal(AnsiBuffer);
+    return Result;
+}
 LRESULT NTAPI UNICODE_INLBOXSTRING(WNDPROC PrevProc, HWND Window, UINT Message, WPARAM wParam, LPARAM lParam)
 {
 	return UNICODE_INSTRINGNULL(PrevProc, Window, Message, wParam, lParam);
@@ -310,7 +418,33 @@ LRESULT NTAPI UNICODE_INLBOXSTRING(WNDPROC PrevProc, HWND Window, UINT Message, 
 
 LRESULT NTAPI UNICODE_OUTLBOXSTRING(WNDPROC PrevProc, HWND Window, UINT Message, WPARAM wParam, LPARAM lParam)
 {
-	return UNICODE_INSTRINGNULL(PrevProc, Window, Message, wParam, lParam);
+    UINT UnicodeSize = (UINT)wParam;
+    LPWSTR UnicodeBuffer = (LPWSTR)lParam;
+
+    if (!UnicodeBuffer || UnicodeSize == 0)
+        return CallWindowProcA(PrevProc, Window, Message, wParam, lParam);
+
+    // Calculate required buffer size for ANSI conversion
+    int AnsiSize = WideCharToMultiByte(settings.CodePage, 0, UnicodeBuffer, UnicodeSize, 
+                                      NULL, 0, NULL, NULL);
+    if (AnsiSize == 0)
+        return 0;
+
+    LPSTR AnsiBuffer = (LPSTR)AllocateZeroedMemory(AnsiSize);
+    if (AnsiBuffer == nullptr)
+        return 0;
+
+    // Call the ANSI procedure
+    LRESULT Result = CallWindowProcA(PrevProc, Window, Message, AnsiSize, (LPARAM)AnsiBuffer);
+
+    // If the call succeeded, convert the result back to Unicode
+    if (Result > 0) {
+        MultiByteToWideChar(settings.CodePage, 0, AnsiBuffer, Result, 
+                           UnicodeBuffer, UnicodeSize);
+    }
+
+    FreeStringInternal(AnsiBuffer);
+    return Result;
 }
 
 LRESULT NTAPI UNICODE_INCNTOUTSTRINGNULL(WNDPROC PrevProc, HWND Window, UINT Message, WPARAM wParam, LPARAM lParam)
@@ -320,10 +454,22 @@ LRESULT NTAPI UNICODE_INCNTOUTSTRINGNULL(WNDPROC PrevProc, HWND Window, UINT Mes
 
 LRESULT NTAPI UNICODE_GETDBCSTEXTLENGTHS(WNDPROC PrevProc, HWND Window, UINT Message, WPARAM wParam, LPARAM lParam)
 {
-	DebugLog(L"UNICODE_GETDBCSTEXTLENGTHS");
-	return CallWindowProcA(PrevProc, Window, Message, wParam, lParam);
-}
+    LPWSTR UnicodeText = (LPWSTR)lParam;
 
+    if (!UnicodeText)
+        return CallWindowProcA(PrevProc, Window, Message, wParam, lParam);
+
+    // Convert to ANSI for proper DBCS length calculation
+    LPSTR AnsiText = WideCharToMultiByteInternal(UnicodeText, settings.CodePage);
+    if (!AnsiText)
+        return 0;
+
+    // Call with ANSI text
+    LRESULT Result = CallWindowProcA(PrevProc, Window, Message, wParam, (LPARAM)AnsiText);
+
+    FreeStringInternal(AnsiText);
+    return Result;
+}
 /****************************************/
 /* Ansi to Unicode KernelCall Functions */
 /****************************************/
@@ -344,29 +490,39 @@ LRESULT NTAPI ANSI_EMPTY(HWND Window, UINT Message, WPARAM wParam, LPARAM lParam
 
 LRESULT NTAPI ANSI_INLPCREATESTRUCT(HWND Window, UINT Message, WPARAM wParam, LPARAM lParam, ULONG_PTR xParam, ULONG xpfnProc, ULONG Flags)
 {
-	CREATESTRUCTW   CreateStructW = nullptr;
-	LPCREATESTRUCTA CreateStructA = (LPCREATESTRUCTA)lParam;
+    CREATESTRUCTW CreateStructW = {0};
+    LPCREATESTRUCTA CreateStructA = (LPCREATESTRUCTA)lParam;
 
-	if (CreateStructA)
-	{
-		CreateStructW = *(LPCREATESTRUCTW)CreateStructA;
-		CreateStructW.lpszClass = MultiByteToWideCharInternal(CreateStructA->lpszClass, settings.CodePage);
-		if (CreateStructA->lpszClass != nullptr)
-		{
-			CreateStructW.lpszName = MultiByteToWideCharInternal(CreateStructA->lpszName, settings.CodePage);
-			CLEAR_FLAG(Flags, WINDOW_FLAG_ANSI);
-		}
-		lParam = (LPARAM)&CreateStructW;
-	}
+    if (CreateStructA)
+    {
+        CreateStructW = *(LPCREATESTRUCTW)CreateStructA;
 
-	LRESULT Result = OriginalNtUserMessageCall(Window, Message, wParam, lParam, xParam, xpfnProc, Flags);
+        // Always convert class name if it exists
+        if (CreateStructA->lpszClass != nullptr) {
+            CreateStructW.lpszClass = MultiByteToWideCharInternal(CreateStructA->lpszClass, settings.CodePage);
+        }
 
-	if (CreateStructA) {
-		FreeStringInternal((LPVOID)CreateStructW.lpszClass);
-		FreeStringInternal((LPVOID)CreateStructW.lpszName);
-	}
+        // Always convert window name if it exists
+        if (CreateStructA->lpszName != nullptr) {
+            CreateStructW.lpszName = MultiByteToWideCharInternal(CreateStructA->lpszName, settings.CodePage);
+        }
 
-	return Result;
+        // Only clear the ANSI flag if we successfully converted all strings
+        if ((CreateStructA->lpszClass == nullptr || CreateStructW.lpszClass != nullptr) &&
+            (CreateStructA->lpszName == nullptr || CreateStructW.lpszName != nullptr)) {
+            CLEAR_FLAG(Flags, WINDOW_FLAG_ANSI);
+            lParam = (LPARAM)&CreateStructW;
+        }
+    }
+
+    LRESULT Result = OriginalNtUserMessageCall(Window, Message, wParam, lParam, xParam, xpfnProc, Flags);
+
+    if (CreateStructA) {
+        FreeStringInternal((LPVOID)CreateStructW.lpszClass);
+        FreeStringInternal((LPVOID)CreateStructW.lpszName);
+    }
+
+    return Result;
 }
 
 LRESULT NTAPI ANSI_INLPMDICREATESTRUCT(HWND Window, UINT Message, WPARAM wParam, LPARAM lParam, ULONG_PTR xParam, ULONG xpfnProc, ULONG Flags)
@@ -396,29 +552,59 @@ LRESULT NTAPI ANSI_INLPMDICREATESTRUCT(HWND Window, UINT Message, WPARAM wParam,
 
 LRESULT NTAPI ANSI_INSTRINGNULL(HWND Window, UINT Message, WPARAM wParam, LPARAM lParam, ULONG_PTR xParam, ULONG xpfnProc, ULONG Flags)
 {
-	LPWSTR Unicode = nullptr;
-	LPSTR Ansi = (LPSTR)lParam;
+    LPWSTR Unicode = nullptr;
+    LPSTR Ansi = (LPSTR)lParam;
 
-	if (Ansi)
-	{
-		Unicode = MultiByteToWideCharInternal(Ansi, settings.CodePage);
-		lParam = (LPARAM)Unicode;
-		CLEAR_FLAG(Flags, WINDOW_FLAG_ANSI);
-	}
+    if (Ansi)
+    {
+        Unicode = MultiByteToWideCharInternal(Ansi, settings.CodePage);
+        if (Unicode) {
+            lParam = (LPARAM)Unicode;
+            CLEAR_FLAG(Flags, WINDOW_FLAG_ANSI);
+        }
+    }
 
-	LRESULT Result = OriginalNtUserMessageCall(Window, Message, wParam, lParam, xParam, xpfnProc, Flags);
+    LRESULT Result = OriginalNtUserMessageCall(Window, Message, wParam, lParam, xParam, xpfnProc, Flags);
+    FreeStringInternal(Unicode);
 
-	FreeStringInternal(Unicode);
-
-	return Result;
+    return Result;
 }
 
 LRESULT NTAPI ANSI_OUTSTRING(HWND Window, UINT Message, WPARAM wParam, LPARAM lParam, ULONG_PTR xParam, ULONG xpfnProc, ULONG Flags)
 {
-	LRESULT Result;
-	DebugLog(L"ANSI_OUTSTRING");
-	Result = OriginalNtUserMessageCall(Window, Message, wParam, lParam, xParam, xpfnProc, Flags);
-	return Result;
+    UINT AnsiSize = (UINT)wParam;
+    LPSTR AnsiBuffer = (LPSTR)lParam;
+
+    if (!AnsiBuffer || AnsiSize == 0)
+        return OriginalNtUserMessageCall(Window, Message, wParam, lParam, xParam, xpfnProc, Flags);
+
+    // Calculate required buffer size for Unicode conversion
+    int UnicodeSize = MultiByteToWideChar(settings.CodePage, 0, AnsiBuffer, AnsiSize, NULL, 0);
+    if (UnicodeSize == 0)
+        return 0;
+
+    LPWSTR UnicodeBuffer = (LPWSTR)AllocateZeroedMemory(UnicodeSize * sizeof(WCHAR));
+    if (UnicodeBuffer == nullptr)
+        return 0;
+
+    // Convert ANSI to Unicode
+    if (!MultiByteToWideChar(settings.CodePage, 0, AnsiBuffer, AnsiSize, 
+                            UnicodeBuffer, UnicodeSize)) {
+        FreeStringInternal(UnicodeBuffer);
+        return 0;
+    }
+
+    CLEAR_FLAG(Flags, WINDOW_FLAG_ANSI);
+    LRESULT Result = OriginalNtUserMessageCall(Window, Message, UnicodeSize, 
+                                              (LPARAM)UnicodeBuffer, xParam, xpfnProc, Flags);
+
+    if (Result > 0 && Result <= AnsiSize) {
+        WideCharToMultiByte(settings.CodePage, 0, UnicodeBuffer, Result, 
+                           AnsiBuffer, AnsiSize, NULL, NULL);
+    }
+
+    FreeStringInternal(UnicodeBuffer);
+    return Result;
 }
 
 LRESULT NTAPI ANSI_INSTRING(HWND Window, UINT Message, WPARAM wParam, LPARAM lParam, ULONG_PTR xParam, ULONG xpfnProc, ULONG Flags)
@@ -428,10 +614,35 @@ LRESULT NTAPI ANSI_INSTRING(HWND Window, UINT Message, WPARAM wParam, LPARAM lPa
 
 LRESULT NTAPI ANSI_INCNTOUTSTRING(HWND Window, UINT Message, WPARAM wParam, LPARAM lParam, ULONG_PTR xParam, ULONG xpfnProc, ULONG Flags)
 {
-	LRESULT Result;
-	DebugLog(L"ANSI_INCNTOUTSTRING");
-	Result = OriginalNtUserMessageCall(Window, Message, wParam, lParam, xParam, xpfnProc, Flags);
-	return Result;
+    // This handles messages where input is a count and string, output is a string
+    UINT AnsiCount = (UINT)wParam;
+    LPSTR AnsiInput = (LPSTR)lParam;
+
+    if (!AnsiInput || AnsiCount == 0)
+        return OriginalNtUserMessageCall(Window, Message, wParam, lParam, xParam, xpfnProc, Flags);
+
+    // Convert input string to Unicode
+    int UnicodeSize = MultiByteToWideChar(settings.CodePage, 0, AnsiInput, AnsiCount, NULL, 0);
+    if (UnicodeSize == 0)
+        return 0;
+    LPWSTR UnicodeBuffer = (LPWSTR)AllocateZeroedMemory(UnicodeSize * sizeof(WCHAR));
+    if (UnicodeBuffer == nullptr)
+        return 0;
+    if (!MultiByteToWideChar(settings.CodePage, 0, AnsiInput, AnsiCount, UnicodeBuffer, UnicodeSize)) {
+        FreeStringInternal(UnicodeBuffer);
+        return 0;
+    }
+
+    CLEAR_FLAG(Flags, WINDOW_FLAG_ANSI);
+    LRESULT Result = OriginalNtUserMessageCall(Window, Message, UnicodeSize, 
+                                              (LPARAM)UnicodeBuffer, xParam, xpfnProc, Flags);
+    if (Result > 0) {
+        WideCharToMultiByte(settings.CodePage, 0, UnicodeBuffer, Result, 
+                           AnsiInput, AnsiCount, NULL, NULL);
+    }
+
+    FreeStringInternal(UnicodeBuffer);
+    return Result;
 }
 
 LRESULT NTAPI ANSI_INCBOXSTRING(HWND Window, UINT Message, WPARAM wParam, LPARAM lParam, ULONG_PTR xParam, ULONG xpfnProc, ULONG Flags)
@@ -464,12 +675,22 @@ LRESULT NTAPI ANSI_INCNTOUTSTRINGNULL(HWND Window, UINT Message, WPARAM wParam, 
 
 LRESULT NTAPI ANSI_GETDBCSTEXTLENGTHS(HWND Window, UINT Message, WPARAM wParam, LPARAM lParam, ULONG_PTR xParam, ULONG xpfnProc, ULONG Flags)
 {
-	LRESULT Result;
-	DebugLog(L"ANSI_GETDBCSTEXTLENGTHS");
-	Result = OriginalNtUserMessageCall(Window, Message, wParam, lParam, xParam, xpfnProc, Flags);
-	return Result;
-}
+    // Handle DBCS text length calculation
+    LPSTR AnsiText = (LPSTR)lParam;
+    if (!AnsiText)
+        return OriginalNtUserMessageCall(Window, Message, wParam, lParam, xParam, xpfnProc, Flags);
 
+    LPWSTR UnicodeText = MultiByteToWideCharInternal(AnsiText, settings.CodePage);
+    if (!UnicodeText)
+        return 0;
+
+    CLEAR_FLAG(Flags, WINDOW_FLAG_ANSI);
+    LRESULT Result = OriginalNtUserMessageCall(Window, Message, wParam, 
+                                              (LPARAM)UnicodeText, xParam, xpfnProc, Flags);
+
+    FreeStringInternal(UnicodeText);
+    return Result;
+}
 
 
 HHOOK CbtHook = nullptr;
@@ -548,16 +769,25 @@ LRESULT NTAPI WindowProcW(HWND Window, UINT Message, WPARAM wParam, LPARAM lPara
 
 LRESULT CALLBACK CBTProc(int nCode, WPARAM wParam, LPARAM lParam)
 {
-	HWND hWnd = (HWND)wParam;
-	WNDPROC OriginalProcA = (WNDPROC)GetWindowLongA(hWnd, GWLP_WNDPROC);
+    if (nCode == HCBT_CREATEWND)
+    {
+        HWND hWnd = (HWND)wParam;
 
-	if (nCode == HCBT_CREATEWND)
-	{
-		SetPropW(hWnd, L"OriginalProcA", OriginalProcA);
-		SetWindowLongW(hWnd, GWLP_WNDPROC, (LONG)WindowProcW);
-	}
+        // Check if this is an ANSI window before hooking
+        BOOL isAnsi = GetWindowLongA(hWnd, GWL_STYLE) & WS_EX_ANSI;
 
-	return CallNextHookEx(CbtHook, nCode, wParam, lParam);
+        if (isAnsi) {
+            WNDPROC OriginalProcA = (WNDPROC)GetWindowLongA(hWnd, GWLP_WNDPROC);
+
+            // Only set the hook if we found a valid procedure
+            if (OriginalProcA) {
+                SetPropW(hWnd, L"OriginalProcA", OriginalProcA);
+                SetWindowLongW(hWnd, GWLP_WNDPROC, (LONG)WindowProcW);
+            }
+        }
+    }
+
+    return CallNextHookEx(CbtHook, nCode, wParam, lParam);
 }
 
 LRESULT WINAPI HookNtUserMessageCall(

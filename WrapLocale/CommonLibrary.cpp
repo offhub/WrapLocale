@@ -17,21 +17,23 @@ LPWSTR MultiByteToWideCharInternal(LPCSTR lstr, UINT CodePage)
 {
 	if (lstr == nullptr)
 		return nullptr;
-	int lsize = lstrlenA(lstr); // size without '\0'
-	int wsize = (lsize + 1) << 1;
-	LPWSTR wstr = (LPWSTR)AllocateZeroedMemory(wsize);
+
+	UINT usedCodePage = CodePage ? CodePage : settings.CodePage;
+
+	int wsize = OriginalMultiByteToWideChar(usedCodePage, 0, lstr, -1, NULL, 0);
+	if (wsize == 0)
+		return nullptr;
+
+	LPWSTR wstr = (LPWSTR)AllocateZeroedMemory(wsize * sizeof(WCHAR));
 	if (!wstr)
 		return nullptr;
-	int n = 0;
-	if (CodePage)
-		n = OriginalMultiByteToWideChar(CodePage, 0, lstr, lsize, wstr, wsize);
-	else
-		n = MultiByteToWideChar(settings.CodePage, 0, lstr, lsize, wstr, wsize);
+
+	int n = OriginalMultiByteToWideChar(usedCodePage, 0, lstr, -1, wstr, wsize);
 	if (n <= 0) {
 		FreeStringInternal(wstr);
 		return nullptr;
 	}
-	wstr[n] = L'\0'; // make tail ! 
+
 	return wstr;
 }
 
@@ -39,26 +41,152 @@ LPSTR WideCharToMultiByteInternal(LPCWSTR wstr, UINT CodePage)
 {
 	if (wstr == nullptr)
 		return nullptr;
-	int wsize = lstrlenW(wstr); // size without '\0'
-	int lsize = (wsize + 1) << 1;
+
+	int lsize = WideCharToMultiByte(CodePage, 0, wstr, -1, NULL, 0, NULL, NULL);
+	 if (lsize == 0) 
+		return nullptr;
+
 	LPSTR lstr = (LPSTR)AllocateZeroedMemory(lsize);
 	if (!lstr)
-		return lstr;
+		return nullptr;
+
 	int n = 0;
-	if (CodePage)
-		n = OriginalWideCharToMultiByte(CodePage, 0, wstr, wsize, lstr, lsize, NULL, NULL);
-	else
-		n = WideCharToMultiByte(settings.CodePage, 0, wstr, wsize, lstr, lsize, NULL, NULL);
-	lstr[n] = '\0'; // make tail ! 
+	UINT usedCodePage = CodePage ? CodePage : settings.CodePage;
+	n = OriginalWideCharToMultiByte(usedCodePage, 0, wstr, -1, lstr, lsize, NULL, NULL);
+	if (n <= 0) {
+		FreeStringInternal(lstr);
+		return nullptr;
+	}
+
 	return lstr;
 }
 
-void DebugLog(const char* format, ...)
+/*
+LPWSTR MultiByteToWideCharInternal(LPCSTR lstr, UINT CodePage)
 {
-	char buffer[1024];
+	if (lstr == nullptr)
+		return nullptr;
+
+	UINT usedCodePage = CodePage ? CodePage : settings.CodePage;
+
+	SIZE_T lsize = strlen(lstr);
+
+	UNICODE_STRING unicodeString;
+	ULONG unicodeSize = 0;
+	ULONG bytesUsed = 0;
+	NTSTATUS status = RtlCustomCPToUnicodeN(
+		usedCodePage,
+		&unicodeString,
+		0,
+		&unicodeSize,
+		lstr,
+		(ULONG)lsize);
+
+	if (!NT_SUCCESS(status))
+		return nullptr;
+
+	// Allocate buffer for Unicode string (adding space for null terminator)
+	unicodeSize += sizeof(WCHAR);
+	LPWSTR wstr = (LPWSTR)AllocateZeroedMemory(unicodeSize);
+	if (!wstr)
+		return nullptr;
+
+	// Convert the string
+	unicodeString.Buffer = wstr;
+	unicodeString.Length = 0;
+	unicodeString.MaximumLength = (USHORT)unicodeSize;
+
+	status = RtlCustomCPToUnicodeN(
+		usedCodePage,
+		&unicodeString,
+		unicodeSize,
+		&bytesUsed,
+		lstr,
+		(ULONG)lsize);
+
+	if (!NT_SUCCESS(status)) {
+		FreeStringInternal(wstr);
+		return nullptr;
+	}
+
+	// Ensure null termination
+	wstr[unicodeString.Length / sizeof(WCHAR)] = L'\0';
+
+	return wstr;
+}
+
+LPSTR WideCharToMultiByteInternal(LPCWSTR wstr, UINT CodePage)
+{
+	if (wstr == nullptr)
+		return nullptr;
+
+	UINT usedCodePage = CodePage ? CodePage : settings.CodePage;
+
+	SIZE_T wsize = wcslen(wstr);
+
+	ANSI_STRING ansiString;
+	ULONG ansiSize = 0;
+	ULONG bytesUsed = 0;
+	NTSTATUS status = RtlUnicodeToCustomCPN(
+		usedCodePage,
+		&ansiString,
+		0,
+		&ansiSize,
+		wstr,
+		(ULONG)(wsize * sizeof(WCHAR)));
+
+	if (!NT_SUCCESS(status))
+		return nullptr;
+
+	// Allocate buffer for ANSI string (adding space for null terminator)
+	ansiSize += sizeof(CHAR);
+	LPSTR lstr = (LPSTR)AllocateZeroedMemory(ansiSize);
+	if (!lstr)
+		return nullptr;
+
+	// Convert the string
+	ansiString.Buffer = lstr;
+	ansiString.Length = 0;
+	ansiString.MaximumLength = (USHORT)ansiSize;
+
+	status = RtlUnicodeToCustomCPN(
+		usedCodePage,
+		&ansiString,
+		ansiSize,
+		&bytesUsed,
+		wstr,
+		(ULONG)(wsize * sizeof(WCHAR)));
+
+	if (!NT_SUCCESS(status)) {
+		FreeStringInternal(lstr);
+		return nullptr;
+	}
+
+	// Ensure null termination
+	lstr[ansiString.Length] = '\0';
+
+	return lstr;
+}
+*/
+
+inline void DebugLog(const char* format, ...)
+{
+	char buffer[1024] = "\0";
 	va_list args;
 	va_start(args, format);
 	vsnprintf(buffer, sizeof(buffer), format, args);
+	buffer[1023] = '\0';
 	va_end(args);
 	OutputDebugStringA(buffer);
+}
+
+inline void DebugLog(const wchar_t* format, ...)
+{
+	wchar_t buffer[1024] = L"\0";
+	va_list args;
+	va_start(args, format);
+	_vsnwprintf(buffer, sizeof(buffer), format, args);
+	buffer[1023] = L'\0';
+	va_end(args);
+	OutputDebugStringW(buffer);
 }

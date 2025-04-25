@@ -12,6 +12,15 @@ typedef LRESULT(WINAPI* NtUserMessageCallFn)(
     ULONG        Flags
     );
 
+
+#ifndef EM_SETCUEBANNER
+#define EM_SETCUEBANNER (WM_USER + 0x1501)
+#endif
+
+#ifndef EM_SETWORDBREAK
+#define EM_SETWORDBREAK 0x00D0
+#endif
+
 // Ansi to Unicode KernelCall Functions
 LRESULT NTAPI ANSI_INLPCREATESTRUCT(HWND Window, UINT Message, WPARAM wParam, LPARAM lParam);
 LRESULT NTAPI ANSI_INLPMDICREATESTRUCT(HWND Window, UINT Message, WPARAM wParam, LPARAM lParam);
