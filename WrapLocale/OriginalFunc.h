@@ -644,3 +644,17 @@ static DWORD (WINAPI* OriginalExpandEnvironmentStringsA)(
 	_Out_writes_to_opt_(nSize, return) LPSTR lpDst,
 	_In_ DWORD nSize
 ) = ExpandEnvironmentStringsA;
+
+static int(WINAPI* OriginalEnumFontsA)(
+    HDC hdc,
+    LPCSTR lpLogfont,
+    FONTENUMPROCA lpProc,
+    LPARAM lParam
+) = EnumFontsA;
+
+static int(WINAPI* OriginalEnumFontFamiliesA)(
+    HDC hdc,
+    LPCSTR lpLogfont,
+    FONTENUMPROCA lpProc,
+    LPARAM lParam
+) = EnumFontFamiliesA;

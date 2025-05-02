@@ -91,7 +91,7 @@ LRESULT NTAPI ANSI_GETTEXTLENGTH(HWND Window, UINT Message, WPARAM wParam, LPARA
 
 	cchUnicode = (int)SendMessageW(Window, Message - 1, wParam, (LPARAM)UnicodeParam);
 	if (cchUnicode > 0)
-		cchUnicode = WideCharToMultiByte(CP_ACP, 0, UnicodeParam, cchUnicode * 2, NULL, 0, NULL, NULL);
+		cchUnicode = HookWideCharToMultiByte(settings.CodePage, 0, UnicodeParam, cchUnicode * 2, NULL, 0, NULL, NULL);
 
 	FreeStringInternal(UnicodeParam);
 

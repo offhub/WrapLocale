@@ -261,12 +261,17 @@ BOOL WINAPI HookGetCPInfo(UINT CodePage, LPCPINFO lpCPInfo)
 	return OriginalGetCPInfo(CodePage, lpCPInfo);
 }
 
-LRESULT WINAPI HookSendMessageA(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
+LRESULT WINAPI HookSendMessageA(
+	_In_ HWND hWnd,
+	_In_ UINT uMsg,
+	_In_ WPARAM wParam,
+	_In_ LPARAM lParam
+)
 {
 	//DEBUG_FUNCTION_TRACE();
-	// Handle window creation messages
 	switch (uMsg)
 	{
+		// Handle window creation messages
 		case WM_CREATE:
 		case WM_NCCREATE:
 			return ANSI_INLPCREATESTRUCT(hWnd, uMsg, wParam, lParam);
@@ -619,24 +624,7 @@ BOOL WINAPI HookSetWindowTextA(
 )
 {
 	//DEBUG_FUNCTION_TRACE();
-
-	// Option 2: Convert text
-	/*
-	LPCWSTR wstr = lpString ? MultiByteToWideCharInternal(lpString, settings.CodePage) : NULL;
-	BOOL ret = FALSE;
-	if (lpString == NULL || wstr != NULL)
-		ret = SetWindowTextW(hWnd, wstr);
-	else
-		ret = OriginalSetWindowTextA(hWnd, lpString);
-
-	if (wstr)
-		FreeStringInternal((LPWSTR)wstr);
-
-	return ret;
-	*/
-
-	// Option 2: Use modded SendMessageA
-	return OriginalSendMessageA(hWnd, WM_SETTEXT, 0, (LPARAM)lpString);
+	return HookSendMessageA(hWnd, WM_SETTEXT, 0, (LPARAM)lpString);
 }
 
 int WINAPI HookGetWindowTextA(
@@ -4141,6 +4129,131 @@ DWORD WINAPI HookExpandEnvironmentStringsA(
 	return ansiLen;
 }
 
+DWORD CALLBACK EnumFontsCallbackWrapper(
+    CONST LOGFONTW* lpelfw,
+    CONST TEXTMETRICW* lpntmw,
+    DWORD FontType,
+    LPARAM lParam
+)
+{
+    ENUMFONTS_CB_DATA* cbData = (ENUMFONTS_CB_DATA*)lParam;
+    LOGFONTA lfa;
+    memset(&lfa, 0, sizeof(LOGFONTA));
+    
+    // Copy non-string members
+    lfa.lfHeight = lpelfw->lfHeight;
+    lfa.lfWidth = lpelfw->lfWidth;
+    lfa.lfEscapement = lpelfw->lfEscapement;
+    lfa.lfOrientation = lpelfw->lfOrientation;
+    lfa.lfWeight = lpelfw->lfWeight;
+    lfa.lfItalic = lpelfw->lfItalic;
+    lfa.lfUnderline = lpelfw->lfUnderline;
+    lfa.lfStrikeOut = lpelfw->lfStrikeOut;
+    lfa.lfCharSet = lpelfw->lfCharSet;
+    lfa.lfOutPrecision = lpelfw->lfOutPrecision;
+    lfa.lfClipPrecision = lpelfw->lfClipPrecision;
+    lfa.lfQuality = lpelfw->lfQuality;
+    lfa.lfPitchAndFamily = lpelfw->lfPitchAndFamily;
+    
+    // Convert font face name
+    OriginalWideCharToMultiByte(
+		settings.CodePage, 0, lpelfw->lfFaceName, -1, 
+		lfa.lfFaceName, LF_FACESIZE, NULL, NULL);
+    
+    // Convert text metrics
+    TEXTMETRICA tma;
+    memset(&tma, 0, sizeof(TEXTMETRICA));
+
+    tma.tmHeight = lpntmw->tmHeight;
+    tma.tmAscent = lpntmw->tmAscent;
+    tma.tmDescent = lpntmw->tmDescent;
+    tma.tmInternalLeading = lpntmw->tmInternalLeading;
+    tma.tmExternalLeading = lpntmw->tmExternalLeading;
+    tma.tmAveCharWidth = lpntmw->tmAveCharWidth;
+    tma.tmMaxCharWidth = lpntmw->tmMaxCharWidth;
+    tma.tmWeight = lpntmw->tmWeight;
+    tma.tmOverhang = lpntmw->tmOverhang;
+    tma.tmDigitizedAspectX = lpntmw->tmDigitizedAspectX;
+    tma.tmDigitizedAspectY = lpntmw->tmDigitizedAspectY;
+    tma.tmItalic = lpntmw->tmItalic;
+    tma.tmUnderlined = lpntmw->tmUnderlined;
+    tma.tmStruckOut = lpntmw->tmStruckOut;
+    tma.tmPitchAndFamily = lpntmw->tmPitchAndFamily;
+    tma.tmCharSet = lpntmw->tmCharSet;
+
+	tma.tmFirstChar = (BYTE)lpntmw->tmFirstChar; // extra wrong
+	tma.tmLastChar = (BYTE)lpntmw->tmLastChar;
+	tma.tmDefaultChar = (BYTE)lpntmw->tmDefaultChar;
+	tma.tmBreakChar = (BYTE)lpntmw->tmBreakChar;
+    
+    // Call original callback with converted data
+    return cbData->lpOriginalProc(&lfa, &tma, FontType, cbData->lOriginalParam);
+}
+
+int WINAPI HookEnumFontsA(
+    HDC hdc,
+    LPCSTR lpLogfont,
+    FONTENUMPROCA lpProc,
+    LPARAM lParam
+)
+{
+    DEBUG_FUNCTION_TRACE();
+    
+    // Convert ANSI font name to Unicode if provided
+    LPWSTR wLogfont = NULL;
+    if (lpLogfont) {
+        wLogfont = MultiByteToWideCharInternal(lpLogfont, settings.CodePage);
+        if (!wLogfont)
+            return OriginalEnumFontsA(hdc, lpLogfont, lpProc, lParam);
+    }
+
+    ENUMFONTS_CB_DATA cbData;
+    cbData.lpOriginalProc = lpProc;
+    cbData.lOriginalParam = lParam;
+
+	int result = EnumFontsW(hdc, wLogfont,
+                          (FONTENUMPROCW)EnumFontsCallbackWrapper, 
+                          (LPARAM)&cbData);
+
+    FreeStringInternal(wLogfont);
+    
+    return result;
+}
+
+int WINAPI HookEnumFontFamiliesA(
+    HDC hdc,
+    LPCSTR lpLogfont,
+    FONTENUMPROCA lpProc,
+    LPARAM lParam
+)
+{
+    DEBUG_FUNCTION_TRACE();
+    
+    // Convert ANSI font name to Unicode if provided
+    LPWSTR wLogfont = NULL;
+    if (lpLogfont) {
+        wLogfont = MultiByteToWideCharInternal(lpLogfont, settings.CodePage);
+        if (!wLogfont)
+            return OriginalEnumFontFamiliesA(hdc, lpLogfont, lpProc, lParam);
+    }
+    
+    // Set up callback data
+    ENUMFONTS_CB_DATA cbData;
+    cbData.lpOriginalProc = lpProc;
+    cbData.lOriginalParam = lParam;
+
+	int result = EnumFontFamiliesW(
+		hdc, wLogfont,
+		(FONTENUMPROCW)EnumFontsCallbackWrapper, 
+		(LPARAM)&cbData);
+
+    FreeStringInternal(wLogfont);
+
+    return result;
+}
+
+// INSTALL HOOKS
+
 #define CREATE_HOOK(name) \
 	MH_CreateHook(name, Hook##name, reinterpret_cast<LPVOID*>(&Original##name));
 
@@ -4221,6 +4334,9 @@ void EnableApiHooks()
 	CREATE_HOOK(CreateFontIndirectW)
 	CREATE_HOOK(CreateFontIndirectExA)
 	CREATE_HOOK(CreateFontIndirectExW)
+	CREATE_HOOK(EnumFontsA)
+	CREATE_HOOK(EnumFontFamiliesA)
+
 	//CREATE_HOOK(TextOutA)
 	CREATE_HOOK(DrawTextExA)
 	CREATE_HOOK(GetClipboardData)
@@ -4230,8 +4346,6 @@ void EnableApiHooks()
 	CREATE_HOOK(CreateDialogIndirectParamA)
 
 	CREATE_HOOK(GetTimeZoneInformation)
-	CREATE_HOOK(CreateDirectoryA)
-	CREATE_HOOK(CreateFileA)
 
 	CREATE_HOOK(GetLocaleInfoA)
 	CREATE_HOOK(GetLocaleInfoW)
@@ -4240,8 +4354,8 @@ void EnableApiHooks()
 	//CREATE_HOOK(GetNumberFormatW);
 
 	// Filesystem functions
-	CREATE_HOOK(CreateFileA)
 	CREATE_HOOK(CreateDirectoryA)
+	CREATE_HOOK(CreateFileA)
 	CREATE_HOOK(FindFirstFileA)
 	CREATE_HOOK(FindNextFileA)
 	CREATE_HOOK(FindFirstFileExA)

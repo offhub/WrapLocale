@@ -16,7 +16,7 @@ GLOBAL_CONFIG settings = {
     0x0411,                 // LCID
     540,                    // Bias
     true,                   // HookIME
-    true,                   // SingleLCID
+    false,                   // SingleLCID
     false,                   // UseFontSubstitution
     false,                  // SubstituteAllFonts
     L"MS Gothic",           // SubstituteFontName

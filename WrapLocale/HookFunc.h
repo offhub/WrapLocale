@@ -603,3 +603,29 @@ DWORD WINAPI HookExpandEnvironmentStringsA(
 	_Out_writes_to_opt_(nSize, return) LPSTR lpDst,
 	_In_ DWORD nSize
 );
+
+typedef struct {
+    FONTENUMPROCA lpOriginalProc;
+    LPARAM lOriginalParam;
+} ENUMFONTS_CB_DATA;
+
+DWORD CALLBACK EnumFontsCallbackWrapper(
+	CONST LOGFONTW* lpelfw,
+	CONST TEXTMETRICW* lpntmw,
+	DWORD FontType,
+	LPARAM lParam
+);
+
+int WINAPI HookEnumFontsA(
+    HDC hdc,
+    LPCSTR lpLogfont,
+    FONTENUMPROCA lpProc,
+    LPARAM lParam
+);
+
+int WINAPI HookEnumFontFamiliesA(
+    HDC hdc,
+    LPCSTR lpLogfont,
+    FONTENUMPROCA lpProc,
+    LPARAM lParam
+);
