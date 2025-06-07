@@ -1,0 +1,254 @@
+name: Build WrapLocale with MinHook
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  SOLUTION_PATH: WrapLocale.sln
+  MINHOOK_INCLUDE: WrapLocale/MinHook/include
+  BUILD_OUTPUT_DIR: WrapLocale
+
+jobs:
+  Build_x64_Release:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Setup MSBuild and Windows SDK
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Add Windows SDK to PATH
+        shell: pwsh
+        run: |
+          $sdkPath = (Get-ChildItem "C:\\Program Files (x86)\\Windows Kits\\10\\Lib\\10.0.*\\um\\x64\\kernel32.lib").Directory.Parent.Parent.FullName
+          echo "Windows SDK Path: $sdkPath"
+          echo "WINDOWS_SDK_PATH=$sdkPath" >> $env:GITHUB_ENV
+          echo "PATH=$sdkPath\\bin;$env:PATH" >> $env:GITHUB_ENV
+
+      - name: Clean previous builds
+        shell: pwsh
+        run: |
+          $outputPath = Join-Path -Path $env:GITHUB_WORKSPACE -ChildPath "$env:BUILD_OUTPUT_DIR/Release"
+          if (Test-Path $outputPath) { Remove-Item -Path $outputPath -Recurse -Force }
+
+      - name: Build Release x64
+        shell: pwsh
+        run: |
+          $solutionPath = Join-Path -Path $env:GITHUB_WORKSPACE -ChildPath $env:SOLUTION_PATH
+          $minhookLibPath = Join-Path -Path $env:GITHUB_WORKSPACE -ChildPath "WrapLocale/MinHook/lib/x64"
+
+          $env:Include = "$env:GITHUB_WORKSPACE/$env:MINHOOK_INCLUDE;$env:WINDOWS_SDK_PATH\Include\um;$env:WINDOWS_SDK_PATH\Include\shared;$env:Include"
+          $env:Lib = "$minhookLibPath;$env:WINDOWS_SDK_PATH\Lib\um\x64;$env:WINDOWS_SDK_PATH\Lib\ucrt\x64;$env:Lib"
+
+          msbuild "$solutionPath" `
+            /p:Configuration="Release" `
+            /p:Platform="x64" `
+            /p:PlatformToolset="v143" `
+            /p:WindowsTargetPlatformVersion="10.0" `
+            /p:OutDir="$env:GITHUB_WORKSPACE\\$env:BUILD_OUTPUT_DIR\\Release\\" `
+            /t:Rebuild `
+            /v:minimal `
+            /maxcpucount:8
+
+      - name: List build output recursively
+        shell: pwsh
+        run: |
+          Get-ChildItem -Path "$env:GITHUB_WORKSPACE" -Recurse | Select-Object FullName
+
+      - name: Upload x64 Release artifacts (dll + pdb)
+        uses: actions/upload-artifact@v4
+        with:
+          name: WrapLocale_x64_Release
+          path: |
+            WrapLocale/Release/WrapLocale_x64.dll
+            WrapLocale/Release/WrapLocale_x64.pdb
+          retention-days: 30
+
+  Build_x64_Debug:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Setup MSBuild and Windows SDK
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Add Windows SDK to PATH
+        shell: pwsh
+        run: |
+          $sdkPath = (Get-ChildItem "C:\\Program Files (x86)\\Windows Kits\\10\\Lib\\10.0.*\\um\\x64\\kernel32.lib").Directory.Parent.Parent.FullName
+          echo "Windows SDK Path: $sdkPath"
+          echo "WINDOWS_SDK_PATH=$sdkPath" >> $env:GITHUB_ENV
+          echo "PATH=$sdkPath\\bin;$env:PATH" >> $env:GITHUB_ENV
+
+      - name: Clean previous builds
+        shell: pwsh
+        run: |
+          $outputPath = Join-Path -Path $env:GITHUB_WORKSPACE -ChildPath "$env:BUILD_OUTPUT_DIR/Debug"
+          if (Test-Path $outputPath) { Remove-Item -Path $outputPath -Recurse -Force }
+
+      - name: Build Debug x64
+        shell: pwsh
+        run: |
+          $solutionPath = Join-Path -Path $env:GITHUB_WORKSPACE -ChildPath $env:SOLUTION_PATH
+          $minhookLibPath = Join-Path -Path $env:GITHUB_WORKSPACE -ChildPath "WrapLocale/MinHook/lib/x64"
+
+          $env:Include = "$env:GITHUB_WORKSPACE/$env:MINHOOK_INCLUDE;$env:WINDOWS_SDK_PATH\Include\um;$env:WINDOWS_SDK_PATH\Include\shared;$env:Include"
+          $env:Lib = "$minhookLibPath;$env:WINDOWS_SDK_PATH\Lib\um\x64;$env:WINDOWS_SDK_PATH\Lib\ucrt\x64;$env:Lib"
+
+          msbuild "$solutionPath" `
+            /p:Configuration="Debug" `
+            /p:Platform="x64" `
+            /p:PlatformToolset="v143" `
+            /p:WindowsTargetPlatformVersion="10.0" `
+            /p:OutDir="$env:GITHUB_WORKSPACE\\$env:BUILD_OUTPUT_DIR\\Debug\\" `
+            /t:Rebuild `
+            /v:minimal `
+            /maxcpucount:8
+
+      - name: List build output recursively
+        shell: pwsh
+        run: |
+          Get-ChildItem -Path "$env:GITHUB_WORKSPACE" -Recurse | Select-Object FullName
+
+      - name: Upload x64 Debug artifacts (dll + pdb)
+        uses: actions/upload-artifact@v4
+        with:
+          name: WrapLocale_x64_Debug
+          path: |
+            WrapLocale/Debug/WrapLocale_x64.dll
+            WrapLocale/Debug/WrapLocale_x64.pdb
+          retention-days: 30
+
+  Build_x86_Release:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Setup MSBuild and Windows SDK
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Add Windows SDK to PATH
+        shell: pwsh
+        run: |
+          $sdkPath = (Get-ChildItem "C:\\Program Files (x86)\\Windows Kits\\10\\Lib\\10.0.*\\um\\x86\\kernel32.lib").Directory.Parent.Parent.FullName
+          echo "Windows SDK Path: $sdkPath"
+          echo "WINDOWS_SDK_PATH=$sdkPath" >> $env:GITHUB_ENV
+          echo "PATH=$sdkPath\\bin;$env:PATH" >> $env:GITHUB_ENV
+
+      - name: Clean previous builds
+        shell: pwsh
+        run: |
+          $outputPath = Join-Path -Path $env:GITHUB_WORKSPACE -ChildPath "$env:BUILD_OUTPUT_DIR/Release"
+          if (Test-Path $outputPath) { Remove-Item -Path $outputPath -Recurse -Force }
+
+      - name: Build Release x86
+        shell: pwsh
+        run: |
+          $solutionPath = Join-Path -Path $env:GITHUB_WORKSPACE -ChildPath $env:SOLUTION_PATH
+          $minhookLibPath = Join-Path -Path $env:GITHUB_WORKSPACE -ChildPath "WrapLocale/MinHook/lib/x86"
+
+          $env:Include = "$env:GITHUB_WORKSPACE/$env:MINHOOK_INCLUDE;$env:WINDOWS_SDK_PATH\Include\um;$env:WINDOWS_SDK_PATH\Include\shared;$env:Include"
+          $env:Lib = "$minhookLibPath;$env:WINDOWS_SDK_PATH\Lib\um\x86;$env:WINDOWS_SDK_PATH\Lib\ucrt\x86;$env:Lib"
+
+          msbuild "$solutionPath" `
+            /p:Configuration="Release" `
+            /p:Platform="x86" `
+            /p:PlatformToolset="v143" `
+            /p:WindowsTargetPlatformVersion="10.0" `
+            /p:OutDir="$env:GITHUB_WORKSPACE\\$env:BUILD_OUTPUT_DIR\\Release\\" `
+            /t:Rebuild `
+            /v:minimal `
+            /maxcpucount:8
+
+      - name: List build output recursively
+        shell: pwsh
+        run: |
+          Get-ChildItem -Path "$env:GITHUB_WORKSPACE" -Recurse | Select-Object FullName
+
+      - name: Upload x86 Release artifacts (dll + pdb)
+        uses: actions/upload-artifact@v4
+        with:
+          name: WrapLocale_x86_Release
+          path: |
+            WrapLocale/Release/WrapLocale_x86.dll
+            WrapLocale/Release/WrapLocale_x86.pdb
+          retention-days: 30
+
+  Build_x86_Debug:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Setup MSBuild and Windows SDK
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Add Windows SDK to PATH
+        shell: pwsh
+        run: |
+          $sdkPath = (Get-ChildItem "C:\\Program Files (x86)\\Windows Kits\\10\\Lib\\10.0.*\\um\\x86\\kernel32.lib").Directory.Parent.Parent.FullName
+          echo "Windows SDK Path: $sdkPath"
+          echo "WINDOWS_SDK_PATH=$sdkPath" >> $env:GITHUB_ENV
+          echo "PATH=$sdkPath\\bin;$env:PATH" >> $env:GITHUB_ENV
+
+      - name: Clean previous builds
+        shell: pwsh
+        run: |
+          $outputPath = Join-Path -Path $env:GITHUB_WORKSPACE -ChildPath "$env:BUILD_OUTPUT_DIR/Debug"
+          if (Test-Path $outputPath) { Remove-Item -Path $outputPath -Recurse -Force }
+
+      - name: Build Debug x86
+        shell: pwsh
+        run: |
+          $solutionPath = Join-Path -Path $env:GITHUB_WORKSPACE -ChildPath $env:SOLUTION_PATH
+          $minhookLibPath = Join-Path -Path $env:GITHUB_WORKSPACE -ChildPath "WrapLocale/MinHook/lib/x86"
+
+          $env:Include = "$env:GITHUB_WORKSPACE/$env:MINHOOK_INCLUDE;$env:WINDOWS_SDK_PATH\Include\um;$env:WINDOWS_SDK_PATH\Include\shared;$env:Include"
+          $env:Lib = "$minhookLibPath;$env:WINDOWS_SDK_PATH\Lib\um\x86;$env:WINDOWS_SDK_PATH\Lib\ucrt\x86;$env:Lib"
+
+          msbuild "$solutionPath" `
+            /p:Configuration="Debug" `
+            /p:Platform="x86" `
+            /p:PlatformToolset="v143" `
+            /p:WindowsTargetPlatformVersion="10.0" `
+            /p:OutDir="$env:GITHUB_WORKSPACE\\$env:BUILD_OUTPUT_DIR\\Debug\\" `
+            /t:Rebuild `
+            /v:minimal `
+            /maxcpucount:8
+
+      - name: List build output recursively
+        shell: pwsh
+        run: |
+          Get-ChildItem -Path "$env:GITHUB_WORKSPACE" -Recurse | Select-Object FullName
+
+      - name: Upload x86 Debug artifacts (dll + pdb)
+        uses: actions/upload-artifact@v4
+        with:
+          name: WrapLocale_x86_Debug
+          path: |
+            WrapLocale/Debug/WrapLocale_x86.dll
+            WrapLocale/Debug/WrapLocale_x86.pdb
+          retention-days: 30
